@@ -1,0 +1,214 @@
+---
+title: "ADA final project"
+author: "Rashmi"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+### Analyzing the association between pregnancy intention and the timing of initial antenatal care to answer the question of whether pregnancy intention is associated with the odds of delay in the initial antenatal check.
+#### Data source:  The DHS pogram - India (2019).
+
+#### Loading and installing packages
+```{r Load packages}
+pacman::p_load(readxl, dplyr, tidyverse, table1, broom, blorr, lmtest, car, odds.n.ends)
+```
+
+### Data was first manipulated using SPSS software, to exclude variables and observations. Required columns were kept and the rest were manually deleted. For selecting case, the ‘Select Cases’ feature in SPSS was used with the condition : V201 > 0, i.e. total number of children ever born is at least 1. 
+
+#### Loading data
+```{r Load data}
+#Load DHS data
+DHSraw<- read_excel("DHS2019.xlsx")
+
+#column names
+colnames(DHSraw)
+
+```
+#### Data Cleaning
+
+```{r rename variables}
+# Drop columns
+DHSraw<-DHSraw %>% select(-c(5,6)) # using column indices 
+
+# Rename all variable
+
+names(DHSraw) <- c("ID", "age", "residence", "education", "want_preg", "antenatal")
+
+colnames(DHSraw)
+```
+
+
+
+```{r missing values}
+#Find Missing Values
+colSums(is.na(DHSraw))
+
+# summary of variable classes
+str(DHSraw)
+
+
+
+# check for missing values/ not answered
+table(DHSraw$age)
+table(DHSraw$residence)
+table(DHSraw$education)
+table(DHSraw$want_preg, useNA = "always")
+table(DHSraw$antenatal, useNA = "always")
+```
+
+
+
+
+```{r}
+## Categorizing variables and adding labels
+
+DHS1 <- DHSraw %>% 
+
+#Age
+  mutate(age_cat = case_when(age >= 10  & age <= 19 ~ '0',
+                             age >= 20  & age <= 29 ~ '1',
+                             age >= 30  & age <= 39 ~ '2',
+                             age >= 40  & age <= 49 ~ '3'),
+                             
+         age_cat = factor(age_cat,levels = 0:3,
+                          labels = c("Age 10-19", "Age 20-29", "Age 30-39", "Age 40-49")),
+
+#Type of residence
+          
+         residence = factor(residence, levels = 1:2,
+                            labels = c("urban", "rural")),
+                          
+#Education level  
+         education = factor(education, levels = 0:3,
+                            labels = c("No education", "Primary", "Secondary", "Higher")),
+
+#Pregnancy intention (predictor variable)
+         want_preg = factor(want_preg, levels = 1:3,
+                            labels = c("Wanted then", "Wanted later", "Not wanted")),
+
+#Delay in first antenatal check (outcome variable)
+         delay_ante = case_when(antenatal >= 0  & antenatal <= 3 ~ '0',
+                             antenatal >=4  & antenatal <= 11 ~ '1',
+                             TRUE ~ NA_character_),
+         
+         delay_ante = factor(delay_ante, levels = 0:1,
+                             labels = c("No delay", "Delay")))
+        
+head(DHS1)
+```
+
+
+```{r}
+# compare old and new antenatal (outcome) variable
+table(DHSraw$antenatal, DHS1$delay_ante, useNA = "always")
+
+# Data entry "Don't know" was coded as '98', which is now recoded as NA.
+```
+
+
+```{r drop NAs}
+# Drop observations with missing values (NA).
+DHS <- drop_na(DHS1)
+# Percent of data excluded
+100 - nrow(DHS)/nrow(DHS1)*100
+# 164,895 observations kept from 494,019 observations
+```
+
+```{r Descriptive Tables}
+#Descriptive Statistics - Table 1
+
+desc1 <- table1 (~ want_preg + age_cat + residence + education | delay_ante, 
+                 data = DHS)
+desc1
+
+```
+
+
+#### Univariable binary logistic model  (unadjusted)
+```{r unadjusted model}
+model1<-glm(delay_ante ~ want_preg, data=DHS, family="binomial") 
+summary(model1)
+broom::tidy(model1, exponentiate = TRUE, conf.int = TRUE) 
+```
+
+
+##### The odds of delay in the first antenatal check is 36.55% greater in those who wanted pregnancy at a later time (95% CI 1.29-1.44), and 81.40% greater in those who did no want the pregnancy (95% CI 1.72-1.92).
+##### The model sensitivity is 0 suggesting it as no ability to predict the outcome at a predicted probability threshold of 0.5. The specificity is 1 indicating high specificity.
+
+#### Multivariate model (adjusting for age, type of residence, and education level)
+```{r adjusted model}
+model2<-glm(delay_ante ~ want_preg + age_cat + residence + education,
+            data=DHS, family="binomial") 
+summary(model2)
+broom::tidy(model2, exponentiate = TRUE, conf.int = TRUE) #Odds Ratios with 95% Confidence Intervals
+```
+
+#### After adjusting for age, education, and type of residence, those who wanted pregnancy at a later time had 40.33% greater odds (95% CI 1.33-1.48) and those who did not want the pregnancy had 67.64% greater odds (95% CI 1.58-1.77) of delay in initial antenatal check. 
+
+
+```{r}
+car::compareCoefs(model1, model2)
+```
+
+
+
+
+#### Assumption of multicollinearity
+```{r}
+vif(model2)
+#No mulitcolinearity between variables as VIF value is less than 10 for all variables.
+```
+
+#### Assessing Cook's Distance for Influential points
+
+```{r}
+plot1<-plot(model2, which = 4, id.n = 3, col="red")
+```
+#### Cook's D calculations for each obervation.
+```{r}
+model2.data <- augment(model2) %>%  
+  mutate(index = 1:n()) 
+
+head(model2.data)
+```
+
+#### Excluding observations with a Cook's Distance greater than a cutoff of 3 x the mean Cook's D 
+```{r}
+cuttoff <- mean(model2.data$.cooksd)*3 # defines cutoff variable
+
+DHS_out <- model2.data %>% # excludes observations
+  filter(.cooksd<cuttoff)
+
+nrow(DHS_out)/nrow(DHS) # percent of data excluded
+```
+#### Model with observations excluded
+```{r}
+cookmodel<-glm(delay_ante ~ want_preg + age_cat + residence + education,
+            data=DHS_out, family="binomial")
+
+summary(cookmodel)
+
+tidy(cookmodel, exponentiate = TRUE, conf.int = TRUE)
+
+compareCoefs(model2, cookmodel)
+
+# I will be using the model2 which includes influential points, because excluding them is giving larger standard errors and making the model not significant.
+```
+
+#### Assess model fit 
+```{r}
+# log likelihood, deviance, pseudo R2 
+blr_model_fit_stats(model2)
+
+# Hosmer lemeshow goodness of fit test
+blr_test_hosmer_lemeshow(model2)
+# p value is not significant (p>.05) which indicates a good fit.
+
+```
+
+
+#### Compare LRT (adjusted vs unadjusted model)
+```{r}
+lrtest(model1, model2)
+```
+
